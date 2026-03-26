@@ -5,6 +5,8 @@ from slack_bolt import App
 from slack_bolt.adapter.flask import SlackRequestHandler
 from google import genai
 from dotenv import load_dotenv
+from datetime import datetime, timezone, timedelta
+import re
 
 # 환경변수 로드
 load_dotenv()
@@ -19,16 +21,16 @@ slack_app = App(
 )
 handler = SlackRequestHandler(slack_app)
 
-# Gemini 클라이언트 초기화 (신규 SDK 방식)
+# Gemini 클라이언트 초기화
 client = genai.Client(api_key=os.environ["GEMINI_API_KEY"])
 GEMINI_MODEL = "gemini-2.5-flash"
 
-# 중복 이벤트 방지용 처리된 이벤트 ID 저장소
+# 중복 이벤트 방지용 저장소
 processed_events = set()
 processed_events_lock = threading.Lock()
 
 def load_manual():
-    """manual.txt 파일을 읽어서 반환. 없으면 빈 문자열 반환."""
+    """manual.txt 파일을 읽어서 반환."""
     try:
         with open("manual.txt", "r", encoding="utf-8") as f:
             content = f.read().strip()
@@ -74,13 +76,27 @@ def ask_gemini(question: str) -> str:
     )
     return response.text
 
+def log_question(api_client, user_id: str, question: str):
+    """질문 내용을 로그 채널에 기록."""
+    log_channel = os.environ.get("LOG_CHANNEL_ID", "")
+    if not log_channel:
+        return
+    try:
+        kst = timezone(timedelta(hours=9))
+        now = datetime.now(kst).strftime("%Y-%m-%d %H:%M")
+        api_client.chat_postMessage(
+            channel=log_channel,
+            text=f"*👤 질문자:* <@{user_id}>\n*💬 질문:* {question}\n*🕐 시간:* {now}"
+        )
+    except Exception as e:
+        print(f"[오류] 로그 채널 전송 실패: {e}")
+
 def is_duplicate_event(event_id: str) -> bool:
-    """중복 이벤트 여부 확인. 이미 처리된 이벤트면 True 반환."""
+    """중복 이벤트 여부 확인."""
     with processed_events_lock:
         if event_id in processed_events:
             return True
         processed_events.add(event_id)
-        # 메모리 누수 방지: 1000개 초과시 오래된 이벤트 정리
         if len(processed_events) > 1000:
             processed_events.clear()
         return False
@@ -98,13 +114,16 @@ def handle_message(event, say, api_client):
         return
 
     # @멘션 제거
-    import re
     user_message = re.sub(r"<@[A-Z0-9]+>", "", user_message).strip()
     if not user_message:
         return
 
     channel = event.get("channel")
     thread_ts = event.get("thread_ts") or event.get("ts")
+    user_id = event.get("user", "unknown")
+
+    # 로그 채널에 질문 기록
+    log_question(api_client, user_id, user_message)
 
     try:
         answer = ask_gemini(user_message)
