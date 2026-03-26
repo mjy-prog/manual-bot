@@ -38,13 +38,17 @@ def load_manual():
     except FileNotFoundError:
         return ""
 
-def clean_markdown(text: str) -> str:
-    """Gemini가 출력한 마크다운을 슬랙 포맷으로 변환."""
-    # **굵게** → *굵게*
-    text = re.sub(r'\*\*(.+?)\*\*', r'*\1*', text)
-    # ### 제목 → *제목*
-    text = re.sub(r'#{1,6}\s*(.+)', r'*\1*', text)
-    # 빈 줄 정리 (3줄 이상 연속 빈줄 → 2줄로)
+def clean_format(text: str) -> str:
+    """불필요한 마크다운 제거 및 슬랙 포맷 정리."""
+    # **텍스트** → [텍스트]
+    text = re.sub(r'\*\*(.+?)\*\*', r'[\1]', text)
+    # *텍스트* (볼드) → [텍스트] — 단, 슬랙 이탤릭과 구분
+    text = re.sub(r'(?<!\w)\*(?!\s)(.+?)(?<!\s)\*(?!\w)', r'[\1]', text)
+    # ## 제목 → 제목 (해시 제거)
+    text = re.sub(r'#{1,6}\s*(.+)', r'\1', text)
+    # 이모지 전부 제거
+    text = re.sub(r'[\U0001F300-\U0001FAFF\U00002600-\U000027BF\U0000FE00-\U0000FEFF]', '', text)
+    # 3줄 이상 빈줄 → 2줄로
     text = re.sub(r'\n{3,}', '\n\n', text)
     return text.strip()
 
@@ -53,27 +57,18 @@ def ask_gemini(question: str) -> str:
     manual_content = load_manual()
 
     if manual_content:
-        prompt = f"""너는 회사 업무 매뉴얼을 기반으로 팀원 질문에 답변해주는 귀엽고 친절한 업무 도우미야! 🐾
+        prompt = f"""당신은 회사 내부 업무 매뉴얼을 기반으로 질문에 답변하는 업무 도우미입니다.
+아래 매뉴얼 내용만을 참고하여 답변해주세요.
 
-아래 매뉴얼 내용만 참고해서 답변해줘.
-
-=== 답변 규칙 ===
-- 매뉴얼에 없는 내용이면 "앗, 매뉴얼에 해당 내용이 없어요 😢 담당자에게 문의해 주세요!" 라고 답변
-- 정확한 내용을 친절하고 귀엽게 설명하기
-- 이모지 적극 활용하기 🎉✅📌
-- 단계가 있으면 번호로 정리해주기
-- 중요한 내용은 슬랙 볼드(*중요내용*) 로 강조하기
-- 마지막엔 담당자 정보 있으면 꼭 추가하기
-
-=== 슬랙 포맷 규칙 (반드시 지켜!) ===
-- 볼드 강조는 반드시 별표 1개로: *이렇게* (절대 **두개** 쓰지 말 것!)
-- ## 이나 ### 같은 해시태그 제목 절대 사용 금지
-- HTML 태그 사용 금지
-- [ ] 대괄호 안에 ** 절대 사용 금지
-
-=== 말투 예시 ===
-나쁜 예: "연차 신청은 그룹웨어에서 하시면 됩니다."
-좋은 예: "연차 신청은 *그룹웨어 → 근태관리 → 연차신청* 메뉴에서 할 수 있어요! 📅 사용 3일 전까지 신청해야 하는 거 잊지 마세요 😊"
+답변 규칙:
+- 매뉴얼에 없는 내용이면 "매뉴얼에 해당 내용이 없습니다. 담당자에게 문의해주세요." 라고 답변
+- 정확하고 간결하게 답변할 것
+- 말투는 친절하되 차분하고 정중하게
+- 이모지, 이모티콘 절대 사용 금지
+- 중요한 내용 강조 시 [대괄호]로 표시할 것 (예: [환급결정], [대응필요])
+- ** 또는 * 같은 마크다운 기호 절대 사용 금지
+- ## 같은 헤더 기호 절대 사용 금지
+- 단계나 항목은 숫자(1. 2. 3.) 또는 - 로 정리
 
 === 회사 매뉴얼 ===
 {manual_content}
@@ -81,8 +76,8 @@ def ask_gemini(question: str) -> str:
 
 질문: {question}"""
     else:
-        prompt = f"""너는 회사 업무 매뉴얼을 기반으로 팀원 질문에 답변해주는 귀엽고 친절한 업무 도우미야! 🐾
-현재 등록된 매뉴얼이 없어. 모든 질문에 "앗, 아직 매뉴얼이 등록되지 않았어요 😢 담당자에게 문의해 주세요!" 라고 답변해줘.
+        prompt = f"""당신은 회사 내부 업무 매뉴얼을 기반으로 질문에 답변하는 업무 도우미입니다.
+현재 등록된 매뉴얼이 없습니다. "매뉴얼에 해당 내용이 없습니다. 담당자에게 문의해주세요." 라고 답변해주세요.
 
 질문: {question}"""
 
@@ -90,21 +85,23 @@ def ask_gemini(question: str) -> str:
         model=GEMINI_MODEL,
         contents=prompt
     )
-    # 마크다운 → 슬랙 포맷 변환
-    return clean_markdown(response.text)
+    return clean_format(response.text)
 
 def log_question(api_client, user_id: str, question: str):
     """질문 내용을 로그 채널에 기록."""
     log_channel = os.environ.get("LOG_CHANNEL_ID", "")
     if not log_channel:
+        print("[로그] LOG_CHANNEL_ID 환경변수가 설정되지 않았습니다.")
         return
     try:
         kst = timezone(timedelta(hours=9))
         now = datetime.now(kst).strftime("%Y-%m-%d %H:%M")
-        api_client.chat_postMessage(
+        result = api_client.chat_postMessage(
             channel=log_channel,
-            text=f"*👤 질문자:* <@{user_id}>\n*💬 질문:* {question}\n*🕐 시간:* {now}"
+            text=f"질문자: <@{user_id}>\n질문: {question}\n시간: {now}"
         )
+        if not result["ok"]:
+            print(f"[오류] 로그 채널 전송 실패: {result}")
     except Exception as e:
         print(f"[오류] 로그 채널 전송 실패: {e}")
 
@@ -120,7 +117,6 @@ def is_duplicate_event(event_id: str) -> bool:
 
 def handle_message(event, say, api_client):
     """공통 메시지 처리 함수."""
-    # 봇 자신의 메시지는 무시
     if event.get("bot_id"):
         return
     if event.get("subtype") == "bot_message":
@@ -155,7 +151,7 @@ def handle_message(event, say, api_client):
             api_client.chat_postMessage(
                 channel=channel,
                 thread_ts=thread_ts,
-                text="앗, 잠시 문제가 생겼어요 😢 다시 시도해 주세요!"
+                text="잠시 문제가 생겼습니다. 다시 시도해주세요."
             )
         except Exception as inner_e:
             print(f"[오류] 에러 메시지 전송 실패: {inner_e}")
