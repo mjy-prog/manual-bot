@@ -38,26 +38,42 @@ def load_manual():
     except FileNotFoundError:
         return ""
 
+def clean_markdown(text: str) -> str:
+    """Gemini가 출력한 마크다운을 슬랙 포맷으로 변환."""
+    # **굵게** → *굵게*
+    text = re.sub(r'\*\*(.+?)\*\*', r'*\1*', text)
+    # ### 제목 → *제목*
+    text = re.sub(r'#{1,6}\s*(.+)', r'*\1*', text)
+    # 빈 줄 정리 (3줄 이상 연속 빈줄 → 2줄로)
+    text = re.sub(r'\n{3,}', '\n\n', text)
+    return text.strip()
+
 def ask_gemini(question: str) -> str:
     """Gemini에게 매뉴얼 기반 질문을 전달하고 답변을 받음."""
     manual_content = load_manual()
 
     if manual_content:
-        prompt = f"""당신은 회사 내부 업무 매뉴얼 기반 질문 답변 봇입니다.
-아래 매뉴얼 내용만을 참고하여 팀원의 질문에 답변해주세요.
+        prompt = f"""너는 회사 업무 매뉴얼을 기반으로 팀원 질문에 답변해주는 귀엽고 친절한 업무 도우미야! 🐾
 
-규칙:
-- 매뉴얼에 있는 내용만 답변할 것
-- 매뉴얼에 없는 내용이면 반드시 "매뉴얼에 해당 내용이 없습니다. 담당자에게 문의해주세요" 라고 답변
-- 답변은 간결하고 명확하게
-- 친절하지만 너무 격식없지 않게
+아래 매뉴얼 내용만 참고해서 답변해줘.
 
-답변 형식 규칙 (슬랙 포맷 사용):
-- 중요한 단어나 제목은 *굵게* 표시 (예: *연차 신청 방법*)
-- 단계나 항목은 번호 또는 • 으로 나열
-- 내용이 2가지 이상이면 줄바꿈으로 구분
-- 답변 마지막엔 담당자 정보가 있으면 꼭 추가
-- 절대 HTML 태그나 **, ## 같은 마크다운 쓰지 말 것 (슬랙은 * 하나만 사용)
+=== 답변 규칙 ===
+- 매뉴얼에 없는 내용이면 "앗, 매뉴얼에 해당 내용이 없어요 😢 담당자에게 문의해 주세요!" 라고 답변
+- 정확한 내용을 친절하고 귀엽게 설명하기
+- 이모지 적극 활용하기 🎉✅📌
+- 단계가 있으면 번호로 정리해주기
+- 중요한 내용은 슬랙 볼드(*중요내용*) 로 강조하기
+- 마지막엔 담당자 정보 있으면 꼭 추가하기
+
+=== 슬랙 포맷 규칙 (반드시 지켜!) ===
+- 볼드 강조는 반드시 별표 1개로: *이렇게* (절대 **두개** 쓰지 말 것!)
+- ## 이나 ### 같은 해시태그 제목 절대 사용 금지
+- HTML 태그 사용 금지
+- [ ] 대괄호 안에 ** 절대 사용 금지
+
+=== 말투 예시 ===
+나쁜 예: "연차 신청은 그룹웨어에서 하시면 됩니다."
+좋은 예: "연차 신청은 *그룹웨어 → 근태관리 → 연차신청* 메뉴에서 할 수 있어요! 📅 사용 3일 전까지 신청해야 하는 거 잊지 마세요 😊"
 
 === 회사 매뉴얼 ===
 {manual_content}
@@ -65,8 +81,8 @@ def ask_gemini(question: str) -> str:
 
 질문: {question}"""
     else:
-        prompt = f"""당신은 회사 내부 업무 매뉴얼 기반 질문 답변 봇입니다.
-현재 등록된 매뉴얼이 없습니다. 모든 질문에 "매뉴얼에 해당 내용이 없습니다. 담당자에게 문의해주세요" 라고 답변하세요.
+        prompt = f"""너는 회사 업무 매뉴얼을 기반으로 팀원 질문에 답변해주는 귀엽고 친절한 업무 도우미야! 🐾
+현재 등록된 매뉴얼이 없어. 모든 질문에 "앗, 아직 매뉴얼이 등록되지 않았어요 😢 담당자에게 문의해 주세요!" 라고 답변해줘.
 
 질문: {question}"""
 
@@ -74,7 +90,8 @@ def ask_gemini(question: str) -> str:
         model=GEMINI_MODEL,
         contents=prompt
     )
-    return response.text
+    # 마크다운 → 슬랙 포맷 변환
+    return clean_markdown(response.text)
 
 def log_question(api_client, user_id: str, question: str):
     """질문 내용을 로그 채널에 기록."""
@@ -138,7 +155,7 @@ def handle_message(event, say, api_client):
             api_client.chat_postMessage(
                 channel=channel,
                 thread_ts=thread_ts,
-                text="잠시 문제가 생겼어요. 다시 시도해주세요 🙏"
+                text="앗, 잠시 문제가 생겼어요 😢 다시 시도해 주세요!"
             )
         except Exception as inner_e:
             print(f"[오류] 에러 메시지 전송 실패: {inner_e}")
