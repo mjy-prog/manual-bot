@@ -21,7 +21,7 @@ handler = SlackRequestHandler(slack_app)
 
 # Gemini API 초기화
 genai.configure(api_key=os.environ["GEMINI_API_KEY"])
-model = genai.GenerativeModel("gemini-2.0-flash-lite")
+model = genai.GenerativeModel("gemini-2.5-flash-preview-04-17")
 
 # 중복 이벤트 방지용 처리된 이벤트 ID 저장소
 processed_events = set()
