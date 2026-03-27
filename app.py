@@ -29,6 +29,10 @@ GEMINI_MODEL = "gemini-2.5-flash"
 processed_events = set()
 processed_events_lock = threading.Lock()
 
+# 스레드별 대화 히스토리 저장소 {thread_ts: [{"role": "user"/"model", "parts": [{"text": "..."}]}]}
+thread_histories = {}
+thread_histories_lock = threading.Lock()
+
 def load_manual():
     """manual.txt 파일을 읽어서 반환."""
     try:
@@ -42,7 +46,7 @@ def clean_format(text: str) -> str:
     """불필요한 마크다운 제거 및 슬랙 포맷 정리."""
     # **텍스트** → [텍스트]
     text = re.sub(r'\*\*(.+?)\*\*', r'[\1]', text)
-    # *텍스트* (볼드) → [텍스트] — 단, 슬랙 이탤릭과 구분
+    # *텍스트* (볼드) → [텍스트]
     text = re.sub(r'(?<!\w)\*(?!\s)(.+?)(?<!\s)\*(?!\w)', r'[\1]', text)
     # ## 제목 → 제목 (해시 제거)
     text = re.sub(r'#{1,6}\s*(.+)', r'\1', text)
@@ -52,18 +56,18 @@ def clean_format(text: str) -> str:
     text = re.sub(r'\n{3,}', '\n\n', text)
     return text.strip()
 
-def ask_gemini(question: str) -> str:
-    """Gemini에게 매뉴얼 기반 질문을 전달하고 답변을 받음."""
+def build_system_prompt():
+    """시스템 프롬프트 생성."""
     manual_content = load_manual()
-
     if manual_content:
-        prompt = f"""당신은 회사 내부 업무 매뉴얼을 기반으로 질문에 답변하는 업무 도우미입니다.
+        return f"""당신은 회사 내부 업무 매뉴얼을 기반으로 질문에 답변하는 업무 도우미입니다.
 아래 매뉴얼 내용만을 참고하여 답변해주세요.
 
 답변 규칙:
 - 매뉴얼에 없는 내용이면 "매뉴얼에 해당 내용이 없습니다. 담당자에게 문의해주세요." 라고 답변
 - 정확하고 간결하게 답변할 것
 - 말투는 친절하되 차분하고 정중하게
+- 호칭은 일절 사용하지 말 것 (고객님, 담당자님, 이름 등 모든 호칭 금지)
 - 이모지, 이모티콘 절대 사용 금지
 - 중요한 내용 강조 시 [대괄호]로 표시할 것 (예: [환급결정], [대응필요])
 - ** 또는 * 같은 마크다운 기호 절대 사용 금지
@@ -72,20 +76,46 @@ def ask_gemini(question: str) -> str:
 
 === 회사 매뉴얼 ===
 {manual_content}
-===================
-
-질문: {question}"""
+==================="""
     else:
-        prompt = f"""당신은 회사 내부 업무 매뉴얼을 기반으로 질문에 답변하는 업무 도우미입니다.
+        return """당신은 회사 내부 업무 매뉴얼을 기반으로 질문에 답변하는 업무 도우미입니다.
 현재 등록된 매뉴얼이 없습니다. "매뉴얼에 해당 내용이 없습니다. 담당자에게 문의해주세요." 라고 답변해주세요.
+호칭은 일절 사용하지 말 것."""
 
-질문: {question}"""
+def ask_gemini_with_history(thread_ts: str, user_message: str) -> str:
+    """스레드 히스토리를 포함하여 Gemini에게 질문."""
+    system_prompt = build_system_prompt()
+
+    with thread_histories_lock:
+        if thread_ts not in thread_histories:
+            thread_histories[thread_ts] = []
+        history = thread_histories[thread_ts].copy()
+
+    # 현재 질문 추가
+    current_contents = history + [{"role": "user", "parts": [{"text": user_message}]}]
 
     response = client.models.generate_content(
         model=GEMINI_MODEL,
-        contents=prompt
+        contents=current_contents,
+        config={"system_instruction": system_prompt}
     )
-    return clean_format(response.text)
+    answer = response.text
+
+    # 히스토리 업데이트
+    with thread_histories_lock:
+        if thread_ts not in thread_histories:
+            thread_histories[thread_ts] = []
+        thread_histories[thread_ts].append({"role": "user", "parts": [{"text": user_message}]})
+        thread_histories[thread_ts].append({"role": "model", "parts": [{"text": answer}]})
+        # 히스토리 최대 20턴 유지 (메모리 관리)
+        if len(thread_histories[thread_ts]) > 40:
+            thread_histories[thread_ts] = thread_histories[thread_ts][-40:]
+        # 스레드 수 최대 500개 유지
+        if len(thread_histories) > 500:
+            oldest_key = next(iter(thread_histories))
+            del thread_histories[oldest_key]
+
+    return answer
 
 def log_question(api_client, user_id: str, question: str):
     """질문 내용을 로그 채널에 기록."""
@@ -135,11 +165,13 @@ def handle_message(event, say, api_client):
     thread_ts = event.get("thread_ts") or event.get("ts")
     user_id = event.get("user", "unknown")
 
-    # 로그 채널에 질문 기록
-    log_question(api_client, user_id, user_message)
+    # 로그 채널에 질문 기록 (스레드 첫 질문만)
+    if not event.get("thread_ts"):
+        log_question(api_client, user_id, user_message)
 
     try:
-        answer = ask_gemini(user_message)
+        answer = ask_gemini_with_history(thread_ts, user_message)
+        answer = clean_format(answer)
         api_client.chat_postMessage(
             channel=channel,
             thread_ts=thread_ts,
