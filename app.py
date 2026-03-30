@@ -165,10 +165,6 @@ def handle_message(event, say, api_client):
     thread_ts = event.get("thread_ts") or event.get("ts")
     user_id = event.get("user", "unknown")
 
-    # 로그 채널에 질문 기록 (스레드 첫 질문만)
-    if not event.get("thread_ts"):
-        log_question(api_client, user_id, user_message)
-
     try:
         answer = ask_gemini_with_history(thread_ts, user_message)
         answer = clean_format(answer)
@@ -177,6 +173,9 @@ def handle_message(event, say, api_client):
             thread_ts=thread_ts,
             text=answer
         )
+        # 로그 채널에 질문 + 답변 세트 기록 (스레드 첫 질문만)
+        if not event.get("thread_ts"):
+            log_question_and_answer(api_client, user_id, user_message, answer)
     except Exception as e:
         print(f"[오류] 답변 생성 실패: {e}")
         try:
