@@ -29,7 +29,7 @@ GEMINI_MODEL = "gemini-2.5-flash"
 processed_events = set()
 processed_events_lock = threading.Lock()
 
-# 스레드별 대화 히스토리 저장소 {thread_ts: [{"role": "user"/"model", "parts": [{"text": "..."}]}]}
+# 스레드별 대화 히스토리 저장소
 thread_histories = {}
 thread_histories_lock = threading.Lock()
 
@@ -44,15 +44,10 @@ def load_manual():
 
 def clean_format(text: str) -> str:
     """불필요한 마크다운 제거 및 슬랙 포맷 정리."""
-    # **텍스트** → [텍스트]
     text = re.sub(r'\*\*(.+?)\*\*', r'[\1]', text)
-    # *텍스트* (볼드) → [텍스트]
     text = re.sub(r'(?<!\w)\*(?!\s)(.+?)(?<!\s)\*(?!\w)', r'[\1]', text)
-    # ## 제목 → 제목 (해시 제거)
     text = re.sub(r'#{1,6}\s*(.+)', r'\1', text)
-    # 이모지 전부 제거
     text = re.sub(r'[\U0001F300-\U0001FAFF\U00002600-\U000027BF\U0000FE00-\U0000FEFF]', '', text)
-    # 3줄 이상 빈줄 → 2줄로
     text = re.sub(r'\n{3,}', '\n\n', text)
     return text.strip()
 
@@ -91,7 +86,6 @@ def ask_gemini_with_history(thread_ts: str, user_message: str) -> str:
             thread_histories[thread_ts] = []
         history = thread_histories[thread_ts].copy()
 
-    # 현재 질문 추가
     current_contents = history + [{"role": "user", "parts": [{"text": user_message}]}]
 
     response = client.models.generate_content(
@@ -101,24 +95,21 @@ def ask_gemini_with_history(thread_ts: str, user_message: str) -> str:
     )
     answer = response.text
 
-    # 히스토리 업데이트
     with thread_histories_lock:
         if thread_ts not in thread_histories:
             thread_histories[thread_ts] = []
         thread_histories[thread_ts].append({"role": "user", "parts": [{"text": user_message}]})
         thread_histories[thread_ts].append({"role": "model", "parts": [{"text": answer}]})
-        # 히스토리 최대 20턴 유지 (메모리 관리)
         if len(thread_histories[thread_ts]) > 40:
             thread_histories[thread_ts] = thread_histories[thread_ts][-40:]
-        # 스레드 수 최대 500개 유지
         if len(thread_histories) > 500:
             oldest_key = next(iter(thread_histories))
             del thread_histories[oldest_key]
 
     return answer
 
-def log_question(api_client, user_id: str, question: str):
-    """질문 내용을 로그 채널에 기록."""
+def log_question_and_answer(api_client, user_id: str, question: str, answer: str):
+    """질문 + 답변 세트를 로그 채널에 기록."""
     log_channel = os.environ.get("LOG_CHANNEL_ID", "")
     if not log_channel:
         print("[로그] LOG_CHANNEL_ID 환경변수가 설정되지 않았습니다.")
@@ -128,7 +119,7 @@ def log_question(api_client, user_id: str, question: str):
         now = datetime.now(kst).strftime("%Y-%m-%d %H:%M")
         result = api_client.chat_postMessage(
             channel=log_channel,
-            text=f"질문자: <@{user_id}>\n질문: {question}\n시간: {now}"
+            text=f"질문자: <@{user_id}>\n시간: {now}\n\n질문:\n{question}\n\n답변:\n{answer}"
         )
         if not result["ok"]:
             print(f"[오류] 로그 채널 전송 실패: {result}")
@@ -156,7 +147,6 @@ def handle_message(event, say, api_client):
     if not user_message:
         return
 
-    # @멘션 제거
     user_message = re.sub(r"<@[A-Z0-9]+>", "", user_message).strip()
     if not user_message:
         return
